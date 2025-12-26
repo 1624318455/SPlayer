@@ -22,6 +22,14 @@ export type CoverSize = {
 
 /** 音质 */
 export enum QualityType {
+  /** 超清母带 */
+  Master = "Master", // jymaster
+  /** 杜比全景声 */
+  Dolby = "Dolby", // db
+  /** 沉浸环绕声 */
+  Spatial = "Spatial", // sky
+  /** 高清环绕声 */
+  Surround = "Surround", // jyeffect
   /** Hi-Res */
   HiRes = "Hi-Res", // hr
   /** 无损 */
@@ -267,7 +275,7 @@ export type SongLevelDataType = {
 };
 
 // setting
-export type SettingType = "general" | "play" | "lyrics" | "keyboard" | "local" | "other" | "about";
+export type SettingType = "general" | "play" | "lyrics" | "keyboard" | "local" | "third" | "other" | "about";
 
 // UpdateLog
 export type UpdateLogType = {

@@ -63,8 +63,6 @@ export interface SettingState {
   showYrc: boolean;
   /** 显示逐字歌词动画 */
   showYrcAnimation: boolean;
-  /** 显示逐字歌词长音发光效果 */
-  showYrcLongEffect: boolean;
   /** 显示歌词翻译 */
   showTran: boolean;
   /** 显示歌词音译 */
@@ -77,8 +75,6 @@ export interface SettingState {
   downloadPath: string;
   /** 是否启用缓存 */
   cacheEnabled: boolean;
-  /** 缓存大小上限（GB，0 表示不限制） */
-  cacheMaxSizeGB: number;
   /** 音乐命名格式 */
   fileNameFormat: "title" | "artist-title" | "title-artist";
   /** 文件智能分类 */
@@ -145,6 +141,8 @@ export interface SettingState {
   autoHidePlayerMeta: boolean;
   /** 记忆最后进度 */
   memoryLastSeek: boolean;
+  /** 显示进度条悬浮信息 */
+  progressTooltipShow: boolean;
   /** 进度调节吸附最近歌词 */
   progressAdjustLyric: boolean;
   /** 显示播放列表数量 */
@@ -165,6 +163,12 @@ export interface SettingState {
   useAMLyrics: boolean;
   /** 是否使用 AM 歌词弹簧效果 */
   useAMSpring: boolean;
+  /** 隐藏已播放歌词 */
+  hidePassedLines: boolean;
+  /** 文字动画的渐变宽度 */
+  wordFadeWidth: number;
+  /** 歌词时延调节步长（毫秒） */
+  lyricOffsetStep: number;
   /** 是否启用在线 TTML 歌词 */
   enableTTMLLyric: boolean;
   /** AMLL DB 服务地址 */
@@ -185,6 +189,8 @@ export interface SettingState {
   showLocalCover: boolean;
   /** 路由动画 */
   routeAnimation: "none" | "fade" | "zoom" | "slide" | "up";
+  /** 播放器展开动画 */
+  playerExpandAnimation: "up" | "smooth";
   /** 是否使用真实 IP */
   useRealIP: boolean;
   /** 真实 IP 地址 */
@@ -239,10 +245,6 @@ export interface SettingState {
   hideHeartbeatMode: boolean;
   /** 启用搜索关键词获取 */
   enableSearchKeyword: boolean;
-  /** 应用启动次数 */
-  appLaunchCount: number;
-  /** 隐藏 Star 弹窗 */
-  hideStarPopup: boolean;
   /** 首页栏目顺序和显示配置 */
   homePageSections: Array<{
     key: "playlist" | "radar" | "artist" | "video" | "radio" | "album";
@@ -255,6 +257,16 @@ export interface SettingState {
   /** 自定义协议注册 **/
   registryProtocol: {
     orpheus: boolean;
+  };
+  /** Last.fm 集成 */
+  lastfm: {
+    enabled: boolean;
+    apiKey: string;
+    apiSecret: string;
+    sessionKey: string;
+    username: string;
+    scrobbleEnabled: boolean;
+    nowPlayingEnabled: boolean;
   };
   /** 播放器跟随封面主色 */
   playerFollowCoverColor: boolean;
@@ -280,6 +292,7 @@ export const useSettingStore = defineStore("setting", {
     menuShowCover: true,
     menuExpandedKeys: [],
     routeAnimation: "slide",
+    playerExpandAnimation: "up",
     useOnlineService: true,
     showCloseAppTip: true,
     closeAppMethod: "hide",
@@ -298,6 +311,7 @@ export const useSettingStore = defineStore("setting", {
       { key: SongUnlockServer.BODIAN, enabled: true },
       { key: SongUnlockServer.GEQUBAO, enabled: true },
       { key: SongUnlockServer.NETEASE, enabled: true },
+      { key: SongUnlockServer.KUWO, enabled: false },
     ],
     countDownShow: true,
     barLyricShow: true,
@@ -307,6 +321,7 @@ export const useSettingStore = defineStore("setting", {
     playerBackgroundFlowSpeed: 4,
     autoHidePlayerMeta: true,
     memoryLastSeek: true,
+    progressTooltipShow: true,
     progressAdjustLyric: false,
     showPlaylistCount: true,
     showSpectrums: false,
@@ -320,11 +335,13 @@ export const useSettingStore = defineStore("setting", {
     lyricFontBold: true,
     useAMLyrics: false,
     useAMSpring: false,
+    hidePassedLines: false,
+    wordFadeWidth: 0.5,
+    lyricOffsetStep: 500,
     enableTTMLLyric: false,
     amllDbServer: defaultAMLLDbServer,
     showYrc: true,
     showYrcAnimation: true,
-    showYrcLongEffect: true,
     showTran: true,
     showRoma: true,
     lyricsPosition: "flex-start",
@@ -343,7 +360,6 @@ export const useSettingStore = defineStore("setting", {
     showLocalCover: true,
     downloadPath: "",
     cacheEnabled: true,
-    cacheMaxSizeGB: 10,
     fileNameFormat: "title-artist",
     folderStrategy: "none",
     downloadMeta: true,
@@ -359,7 +375,7 @@ export const useSettingStore = defineStore("setting", {
     proxyPort: 80,
     useRealIP: false,
     realIP: "",
-    showPlayMeta: false,
+    showPlayMeta: true,
     showSongQuality: true,
     showSongPrivilegeTag: true,
     showSongOriginalTag: true,
@@ -375,8 +391,6 @@ export const useSettingStore = defineStore("setting", {
     hideLikedPlaylists: false,
     hideHeartbeatMode: false,
     enableSearchKeyword: true,
-    appLaunchCount: 0,
-    hideStarPopup: true,
     homePageSections: [
       { key: "playlist", name: "专属歌单", visible: true, order: 0 },
       { key: "radar", name: "雷达歌单", visible: true, order: 1 },
@@ -389,6 +403,15 @@ export const useSettingStore = defineStore("setting", {
     registryProtocol: {
       orpheus: false,
     },
+    lastfm: {
+      enabled: false,
+      apiKey: "",
+      apiSecret: "",
+      sessionKey: "",
+      username: "",
+      scrobbleEnabled: true,
+      nowPlayingEnabled: true,
+    },
     playerFollowCoverColor: true,
     progressLyricShow: true,
   }),
@@ -399,6 +422,13 @@ export const useSettingStore = defineStore("setting", {
      */
     getFadeTime(state): number {
       return state.songVolumeFade ? state.songVolumeFadeTime : 0;
+    },
+    /**
+     * 检查 Last.fm 配置是否有效
+     */
+    isLastfmConfigured(state): boolean {
+      const { lastfm } = state;
+      return Boolean(lastfm.apiKey && lastfm.apiSecret);
     },
   },
   actions: {

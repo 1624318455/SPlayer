@@ -112,7 +112,7 @@ const initWindowsIpc = (): void => {
   });
 
   // 向主窗口发送事件
-  ipcMain.on("send-to-mainWin", (_, eventName, ...args) => {
+  ipcMain.on("send-to-main-win", (_, eventName, ...args) => {
     const mainWin = mainWindow.getWin();
     if (!mainWin || mainWin.isDestroyed() || mainWin.webContents.isDestroyed()) return;
     mainWin.webContents.send(eventName, ...args);
@@ -163,12 +163,12 @@ const initWindowsIpc = (): void => {
   });
 
   // 开启设置
-  ipcMain.on("open-setting", (_, type) => {
+  ipcMain.on("open-setting", (_, type, scrollTo) => {
     const mainWin = mainWindow.getWin();
     if (!mainWin) return;
     mainWin?.show();
     mainWin?.focus();
-    mainWin?.webContents.send("openSetting", type);
+    mainWin?.webContents.send("openSetting", type, scrollTo);
   });
 };
 

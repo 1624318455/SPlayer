@@ -15,6 +15,7 @@ import { heartRateList } from "@/api/playlist";
 import { formatSongsList, getPlayerInfoObj, getPlaySongData } from "@/utils/format";
 import { calculateLyricIndex } from "@/utils/calc";
 import { LyricLine } from "@applemusic-like-lyrics/lyric";
+import lastfmScrobbler from "@/utils/lastfmScrobbler";
 
 /**
  * 播放器 IPC 服务
@@ -31,12 +32,15 @@ const ipcService = {
   /**
    * 发送歌曲信息
    * @param title 歌曲标题
-   * @param artist 歌手
    * @param name 歌曲名称
+   * @param artist 歌手
+   * @param album 专辑
    */
-  sendSongChange: (title: string, artist: string, name: string) => {
+  sendSongChange: (title: string, name: string, artist: string, album: string) => {
     if (!isElectron) return;
-    window.electron.ipcRenderer.send("play-song-change", `${title} | SPlayer`);
+    // 获取歌曲时长
+    const duration = getPlaySongData()?.duration ?? 0;
+    window.electron.ipcRenderer.send("play-song-change", { title, name, artist, album, duration });
     window.electron.ipcRenderer.send("update-desktop-lyric-data", {
       playName: name,
       artistName: artist,
@@ -84,14 +88,16 @@ const ipcService = {
  * 职责：负责音频生命周期管理、与 AudioManager 交互、调度 Store
  */
 class PlayerController {
-  /** 状态锁，防止快速切歌导致的竞争条件 */
-  private _initializing = false;
   /** 自动关闭定时器 */
   private autoCloseInterval: ReturnType<typeof setInterval> | undefined;
   /** 最大重试次数 */
   private readonly MAX_RETRY_COUNT = 3;
   /** 当前曲目重试信息（按歌曲维度） */
   private retryInfo: { songId: number | string; count: number } = { songId: 0, count: 0 };
+  /** 当前播放请求标识 */
+  private currentRequestToken = 0;
+  /** 连续跳过计数 */
+  private failSkipCount = 0;
 
   constructor() {
     this.bindAudioEvents();
@@ -106,24 +112,25 @@ class PlayerController {
   public async playSong(
     options: { autoPlay?: boolean; seek?: number } = { autoPlay: true, seek: 0 },
   ) {
-    // 防止快速切歌
-    if (this._initializing) return;
-    this._initializing = true;
-
     const musicStore = useMusicStore();
     const statusStore = useStatusStore();
     const songManager = useSongManager();
     const audioManager = useAudioManager();
+
+    // 生成新的请求标识
+    this.currentRequestToken++;
+    const requestToken = this.currentRequestToken;
 
     const { autoPlay = true, seek = 0 } = options;
     // 要播放的歌曲对象
     const playSongData = getPlaySongData();
     if (!playSongData) {
       statusStore.playLoading = false;
+      // 初始化或无歌曲时
+      if (!statusStore.playStatus && !autoPlay) return;
       throw new Error("SONG_NOT_FOUND");
     }
     try {
-      statusStore.playLoading = true;
       // 停止当前播放
       audioManager.stop();
       musicStore.playSong = playSongData;
@@ -136,22 +143,75 @@ class PlayerController {
       if (this.retryInfo.songId !== sid) {
         this.retryInfo = { songId: sid || 0, count: 0 };
       }
+      // 设置加载状态
+      statusStore.playLoading = true;
       // 获取音频源
       const audioSource = await songManager.getAudioSource(playSongData);
-      if (!audioSource.url) throw new Error("AUDIO_SOURCE_NOT_FOUND");
+      if (requestToken !== this.currentRequestToken) {
+        console.log(`🚫 [${playSongData.id}] 请求已过期，舍弃`);
+        return;
+      }
+      if (!audioSource.url) throw new Error("AUDIO_SOURCE_EMPTY");
+      console.log(`🎧 [${playSongData.id}] 最终播放信息:`, audioSource);
       // 更新音质和解锁状态
       statusStore.songQuality = audioSource.quality;
       statusStore.playUblock = audioSource.isUnlocked ?? false;
       // 执行底层播放
       await this.loadAndPlay(audioSource.url, autoPlay, seek);
+      if (requestToken !== this.currentRequestToken) return;
       // 后置处理
       await this.afterPlaySetup(playSongData);
     } catch (error: any) {
-      console.error("❌ 播放初始化失败:", error);
-      // 触发错误处理流程
-      await this.handlePlaybackError(error?.code || 0, seek);
+      if (requestToken === this.currentRequestToken) {
+        console.error("❌ 播放初始化失败:", error);
+        await this.handlePlaybackError(error?.code || 0, options.seek || 0);
+      }
     } finally {
-      this._initializing = false;
+      if (requestToken === this.currentRequestToken) {
+        statusStore.playLoading = false;
+      }
+    }
+  }
+
+  /**
+   * 切换音质（仅切换音频源，不重新加载歌词）
+   * @param seek 当前播放进度（毫秒）
+   * @param autoPlay 是否自动播放（默认保持当前状态）
+   */
+  async switchQuality(seek: number = 0, autoPlay?: boolean) {
+    const statusStore = useStatusStore();
+    const songManager = useSongManager();
+    const audioManager = useAudioManager();
+
+    const playSongData = getPlaySongData();
+    if (!playSongData || playSongData.path) return;
+
+    // 如果未指定 autoPlay，则保持当前播放状态
+    const shouldAutoPlay = autoPlay ?? statusStore.playStatus;
+
+    try {
+      statusStore.playLoading = true;
+      // 清除预取缓存，强制重新获取
+      songManager.clearPrefetch();
+      // 获取新音频源
+      const audioSource = await songManager.getAudioSource(playSongData);
+      if (!audioSource.url) {
+        window.$message.error("切换音质失败");
+        return;
+      }
+      console.log(`🔄 [${playSongData.id}] 切换音质:`, audioSource);
+      // 更新音质和解锁状态
+      statusStore.songQuality = audioSource.quality;
+      statusStore.playUblock = audioSource.isUnlocked ?? false;
+      // 停止当前播放
+      audioManager.stop();
+      // 执行底层播放，保持进度，保持原播放状态
+      await this.loadAndPlay(audioSource.url, shouldAutoPlay, seek);
+    } catch (error) {
+      console.error("❌ 切换音质失败:", error);
+      window.$message.error("切换音质失败");
+    } finally {
+      statusStore.playLoading = false;
     }
   }
 
@@ -164,7 +224,7 @@ class PlayerController {
     const audioManager = useAudioManager();
 
     // 停止当前播放并清理
-    audioManager.stop();
+    // audioManager.stop();
 
     // 设置基础参数
     audioManager.setVolume(statusStore.playVolume);
@@ -214,6 +274,13 @@ class PlayerController {
 
     // 预载下一首
     if (settingStore.useNextPrefetch) songManager.getNextSongUrl();
+
+    // Last.fm Scrobbler
+    if (settingStore.lastfm.enabled && settingStore.isLastfmConfigured) {
+      const { name, artist, album } = getPlayerInfoObj() || {};
+      const durationInSeconds = song.duration > 0 ? Math.floor(song.duration / 1000) : undefined;
+      lastfmScrobbler.startPlaying(name || "", artist || "", album, durationInSeconds);
+    }
   }
 
   /**
@@ -238,7 +305,7 @@ class PlayerController {
         const blobURL = blobURLManager.createBlobURL(coverData.data, coverData.format, path);
         if (blobURL) musicStore.playSong.cover = blobURL;
       } else {
-        musicStore.playSong.cover = "/images/song.jpg?assest";
+        musicStore.playSong.cover = "/images/song.jpg?asset";
       }
 
       // 获取元数据
@@ -290,25 +357,28 @@ class PlayerController {
         // 更新喜欢状态
         ipcService.sendLikeStatus(dataStore.isLikeSong(playSongData?.id || 0));
         // 更新信息
-        const { name, artist } = getPlayerInfoObj() || {};
+        const { name, artist, album } = getPlayerInfoObj() || {};
         const playTitle = `${name} - ${artist}`;
-        ipcService.sendSongChange(playTitle, artist || "", name || "");
+        ipcService.sendSongChange(playTitle, name || "", artist || "", album || "");
       }
     });
 
     // 播放开始
     audioManager.on("play", () => {
-      const { name, artist } = getPlayerInfoObj() || {};
+      const { name, artist, album } = getPlayerInfoObj() || {};
       const playTitle = `${name} - ${artist}`;
       // 更新状态
       statusStore.playStatus = true;
       window.document.title = `${playTitle} | SPlayer`;
       // 只有真正播放了才重置重试计数
       if (this.retryInfo.count > 0) this.retryInfo.count = 0;
+      this.failSkipCount = 0;
+      // Last.fm Scrobbler
+      lastfmScrobbler.resume();
       // IPC 通知
       ipcService.sendPlayStatus(true);
-      ipcService.sendSongChange(playTitle, artist || "", name || "");
-      console.log("▶️ song play:", name);
+      ipcService.sendSongChange(playTitle, name || "", artist || "", album || "");
+      console.log(`▶️ [${musicStore.playSong?.id}] 歌曲播放:`, name);
     });
 
     // 暂停
@@ -316,12 +386,14 @@ class PlayerController {
       statusStore.playStatus = false;
       if (!isElectron) window.document.title = "SPlayer";
       ipcService.sendPlayStatus(false);
-      console.log("⏸️ song pause");
+      lastfmScrobbler.pause();
+      console.log(`⏸️ [${musicStore.playSong?.id}] 歌曲暂停`);
     });
 
     // 播放结束
     audioManager.on("ended", () => {
-      console.log("⏹️ song end");
+      console.log(`⏹️ [${musicStore.playSong?.id}] 歌曲结束`);
+      lastfmScrobbler.stop();
       // 检查定时关闭
       if (this.checkAutoClose()) return;
       // 自动播放下一首
@@ -384,7 +456,22 @@ class PlayerController {
    */
   private async handlePlaybackError(errCode: number | undefined, currentSeek: number = 0) {
     const dataStore = useDataStore();
+    const musicStore = useMusicStore();
     const statusStore = useStatusStore();
+    const songManager = useSongManager();
+
+    // 清除预加载缓存
+    songManager.clearPrefetch();
+
+    // 是否为本地歌曲
+    const isLocalSong = musicStore.playSong.path;
+    if (isLocalSong) {
+      console.error("❌ 本地文件加载失败，停止重试");
+      window.$message.error("本地文件无法播放");
+      this.retryInfo.count = 0;
+      await this.nextOrPrev("next");
+      return;
+    }
 
     this.retryInfo.count++;
     console.warn(
@@ -400,14 +487,27 @@ class PlayerController {
     // 达到最大重试次数 -> 切歌
     if (this.retryInfo.count > this.MAX_RETRY_COUNT) {
       console.error("❌ 超过最大重试次数，跳过当前歌曲");
-      window.$message.error("播放失败，已自动跳过");
-      this.retryInfo.count = 0;
 
-      if (dataStore.playList.length > 1) {
-        await this.nextOrPrev("next");
-      } else {
-        this.cleanPlayList();
+      this.retryInfo.count = 0;
+      this.failSkipCount++;
+
+      // 连续跳过 3 首直接暂停
+      if (this.failSkipCount >= 3) {
+        window.$message.error("播放失败次数过多，已停止播放");
+        this.pause(true);
+        this.failSkipCount = 0;
+        return;
       }
+
+      // 列表只有一首，或连续跳过所有歌曲
+      if (dataStore.playList.length <= 1 || this.failSkipCount >= dataStore.playList.length) {
+        window.$message.error("当前已无可播放歌曲");
+        this.cleanPlayList();
+        this.failSkipCount = 0;
+        return;
+      }
+      window.$message.error("播放失败，已自动跳过");
+      await this.nextOrPrev("next");
       return;
     }
 
@@ -653,19 +753,23 @@ class PlayerController {
     if (statusStore.personalFmMode) statusStore.personalFmMode = false;
     // 确定播放索引
     if (song && song.id) {
-      if (musicStore.playSong.id === song.id && options.play) {
-        await this.play();
+      const newIndex = processedData.findIndex((s) => s.id === song.id);
+      if (musicStore.playSong.id === song.id) {
+        // 如果是同一首歌，仅更新索引
+        if (newIndex !== -1) statusStore.playIndex = newIndex;
+        // 如果需要播放
+        if (options.play) await this.play();
       } else {
         // 在开始请求之前就设置加载状态
         statusStore.playLoading = true;
-        statusStore.playIndex = processedData.findIndex((s) => s.id === song.id);
-        await this.playSong();
+        statusStore.playIndex = newIndex;
+        await this.playSong({ autoPlay: options.play });
       }
     } else {
       // 默认播放第一首
       statusStore.playLoading = true;
       statusStore.playIndex = 0;
-      await this.playSong();
+      await this.playSong({ autoPlay: options.play });
     }
     musicStore.playPlaylistId = pid ?? 0;
     if (options.showTip) window.$message.success("已开始播放");
@@ -712,16 +816,17 @@ class PlayerController {
     const currentSongId = musicStore.playSong.id;
     const songIndex = await dataStore.setNextPlaySong(song, statusStore.playIndex);
 
+    // 修正当前播放索引
+    const newCurrentIndex = dataStore.playList.findIndex((s) => s.id === currentSongId);
+    if (newCurrentIndex !== -1 && newCurrentIndex !== statusStore.playIndex) {
+      statusStore.playIndex = newCurrentIndex;
+    }
+
     // 播放歌曲
     if (songIndex < 0) return;
     if (play) {
       await this.togglePlayIndex(songIndex, true);
     } else {
-      // 修正当前播放索引
-      const newCurrentIndex = dataStore.playList.findIndex((s) => s.id === currentSongId);
-      if (newCurrentIndex !== -1 && newCurrentIndex !== statusStore.playIndex) {
-        statusStore.playIndex = newCurrentIndex;
-      }
       window.$message.success("已添加至下一首播放");
     }
   }
@@ -847,11 +952,11 @@ class PlayerController {
           ? song.album.name
           : String(song.album),
       artwork: [
-        { src: musicStore.getSongCover("s"), sizes: "100x100", type: "image/jpeg" },
-        { src: musicStore.getSongCover("m"), sizes: "300x300", type: "image/jpeg" },
-        { src: musicStore.getSongCover("cover"), sizes: "512x512", type: "image/jpeg" },
-        { src: musicStore.getSongCover("l"), sizes: "1024x1024", type: "image/jpeg" },
-        { src: musicStore.getSongCover("xl"), sizes: "1920x1920", type: "image/jpeg" },
+        { src: musicStore.getSongCover("s") || musicStore.playSong.cover || "", sizes: "100x100", type: "image/jpeg" },
+        { src: musicStore.getSongCover("m") || musicStore.playSong.cover || "", sizes: "300x300", type: "image/jpeg" },
+        { src: musicStore.getSongCover("cover") || musicStore.playSong.cover || "", sizes: "512x512", type: "image/jpeg" },
+        { src: musicStore.getSongCover("l") || musicStore.playSong.cover || "", sizes: "1024x1024", type: "image/jpeg" },
+        { src: musicStore.getSongCover("xl") || musicStore.playSong.cover || "", sizes: "1920x1920", type: "image/jpeg" },
       ],
     });
   }

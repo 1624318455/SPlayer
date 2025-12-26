@@ -36,17 +36,19 @@ const initIpc = () => {
     // 播放模式切换
     window.electron.ipcRenderer.on("changeMode", (_, mode) => player.togglePlayMode(mode));
     // 喜欢歌曲
-    window.electron.ipcRenderer.on("toogleLikeSong", async () => {
+    window.electron.ipcRenderer.on("toggle-like-song", async () => {
       const dataStore = useDataStore();
       const musicStore = useMusicStore();
       await toLikeSong(musicStore.playSong, !dataStore.isLikeSong(musicStore.playSong.id));
     });
     // 开启设置
-    window.electron.ipcRenderer.on("openSetting", (_, type: SettingType) => openSetting(type));
+    window.electron.ipcRenderer.on("openSetting", (_, type: SettingType, scrollTo?: string) =>
+      openSetting(type, scrollTo),
+    );
     // 桌面歌词开关
-    window.electron.ipcRenderer.on("toogleDesktopLyric", () => player.toggleDesktopLyric());
+    window.electron.ipcRenderer.on("toggle-desktop-lyric", () => player.toggleDesktopLyric());
     // 显式关闭桌面歌词
-    window.electron.ipcRenderer.on("closeDesktopLyric", () => player.setDesktopLyricShow(false));
+    window.electron.ipcRenderer.on("close-desktop-lyric", () => player.setDesktopLyricShow(false));
     // 请求歌词数据
     window.electron.ipcRenderer.on("request-desktop-lyric-data", () => {
       const musicStore = useMusicStore();

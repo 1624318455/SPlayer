@@ -3,7 +3,8 @@ import { songLyric, songLyricTTML } from "@/api/song";
 import { type SongLyric } from "@/types/lyric";
 import { type LyricLine, parseLrc, parseTTML, parseYrc } from "@applemusic-like-lyrics/lyric";
 import { isElectron } from "@/utils/env";
-import { isEmpty } from "lodash-es";
+import { isEmpty, max } from "lodash-es";
+import { useCacheManager } from "@/core/resource/CacheManager";
 
 class LyricManager {
   /**
@@ -32,6 +33,47 @@ class LyricManager {
     // 重置歌词索引
     statusStore.lyricIndex = -1;
   }
+
+  /**
+   * 获取缓存歌词（原始数据）
+   * @param id 歌曲 ID
+   * @param type 缓存类型
+   * @returns 缓存数据
+   */
+  private async getRawLyricCache(id: number, type: "lrc" | "ttml"): Promise<string | null> {
+    const settingStore = useSettingStore();
+    if (!isElectron || !settingStore.cacheEnabled) return null;
+    try {
+      const cacheManager = useCacheManager();
+      const result = await cacheManager.get("lyrics", `${id}.${type === "ttml" ? "ttml" : "json"}`);
+      if (result.success && result.data) {
+        // Uint8Array to string
+        const decoder = new TextDecoder();
+        return decoder.decode(result.data);
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 保存缓存歌词（原始数据）
+   * @param id 歌曲 ID
+   * @param type 缓存类型
+   * @param data 数据
+   */
+  private async saveRawLyricCache(id: number, type: "lrc" | "ttml", data: string) {
+    const settingStore = useSettingStore();
+    if (!isElectron || !settingStore.cacheEnabled) return;
+    try {
+      const cacheManager = useCacheManager();
+      await cacheManager.set("lyrics", `${id}.${type === "ttml" ? "ttml" : "json"}`, data);
+    } catch (error) {
+      console.error("写入歌词缓存失败:", error);
+    }
+  }
+
   /**
    * 歌词内容对齐
    * @param lyrics 歌词数据
@@ -56,15 +98,17 @@ class LyricManager {
     }
     return lyricsData;
   }
+
   /**
    * 对齐本地歌词
-   * @param lyrics 本地歌词数据
-   * @param otherLyrics 其他歌词数据
+   * @param lyricData 本地歌词数据
    * @returns 对齐后的本地歌词数据
    */
   private alignLocalLyrics(lyricData: SongLyric): SongLyric {
     // 同一时间的两/三行分别作为主句、翻译、音译
     const toTime = (line: LyricLine) => Number(line?.startTime ?? line?.words?.[0]?.startTime ?? 0);
+    // 获取结束时间
+    const toEndTime = (line: LyricLine) => Number(line?.endTime ?? line?.words?.[line?.words?.length - 1]?.endTime ?? 0);
     // 取内容
     const toText = (line: LyricLine) => String(line?.words?.[0]?.word || "").trim();
     const lrc = lyricData.lrcData || [];
@@ -81,14 +125,21 @@ class LyricManager {
     // 组装：第 1 行主句；第 2 行翻译；第 3 行音译；不调整时长
     const aligned = groups.map((group) => {
       const base = { ...group[0] } as LyricLine;
-      const tran = group[1] ? toText(group[1]) : "";
-      const roma = group[2] ? toText(group[2]) : "";
-      if (!base.translatedLyric) base.translatedLyric = tran;
-      if (!base.romanLyric) base.romanLyric = roma;
+      const tran = group[1];
+      const roma = group[2];
+      if (!base.translatedLyric && tran) {
+        base.translatedLyric = toText(tran);
+        base.endTime = max([toEndTime(base), toEndTime(tran)]);
+      }
+      if (!base.romanLyric && roma) {
+        base.romanLyric = toText(roma);
+        base.endTime = max([toEndTime(base), toEndTime(roma)]);
+      }
       return base;
     });
     return { lrcData: aligned, yrcData: lyricData.yrcData };
   }
+
   /**
    * 处理在线歌词
    * @param id 歌曲 ID
@@ -109,7 +160,13 @@ class LyricManager {
     // 处理 TTML 歌词
     const adoptTTML = async () => {
       if (!settingStore.enableTTMLLyric) return;
-      const ttmlContent = await songLyricTTML(id);
+      let ttmlContent: string | null = await this.getRawLyricCache(id, "ttml");
+      if (!ttmlContent) {
+        ttmlContent = await songLyricTTML(id);
+        if (ttmlContent && typeof ttmlContent === "string") {
+          this.saveRawLyricCache(id, "ttml", ttmlContent);
+        }
+      }
       if (isStale()) return;
       if (!ttmlContent || typeof ttmlContent !== "string") return;
       const parsed = parseTTML(ttmlContent);
@@ -120,7 +177,21 @@ class LyricManager {
     };
     // 处理 LRC 歌词
     const adoptLRC = async () => {
-      const data = await songLyric(id);
+      let data: any = null;
+      const cached = await this.getRawLyricCache(id, "lrc");
+      if (cached) {
+        try {
+          data = JSON.parse(cached);
+        } catch {
+          data = null;
+        }
+      }
+      if (!data) {
+        data = await songLyric(id);
+        if (data && data.code === 200) {
+          this.saveRawLyricCache(id, "lrc", JSON.stringify(data));
+        }
+      }
       if (isStale()) return;
       if (!data || data.code !== 200) return;
       let lrcLines: LyricLine[] = [];
@@ -159,6 +230,7 @@ class LyricManager {
     statusStore.usingTTMLLyric = ttmlAdopted;
     return result;
   }
+
   /**
    * 处理本地歌词
    * @param path 本地歌词路径
@@ -186,6 +258,7 @@ class LyricManager {
       return { lrcData: [], yrcData: [] };
     }
   }
+
   /**
    * 检测本地歌词覆盖
    * @param id 歌曲 ID
@@ -238,6 +311,7 @@ class LyricManager {
       return { lrcData: [], yrcData: [] };
     }
   }
+
   /**
    * 处理歌词排除
    * @param lyricData 歌词数据
@@ -282,6 +356,43 @@ class LyricManager {
           : lyricData.yrcData || [],
     };
   }
+
+  /**
+   * 比较歌词数据是否相同
+   * @param oldData 旧歌词数据
+   * @param newData 新歌词数据
+   * @returns 是否相同
+   */
+  private isLyricDataEqual(oldData: SongLyric, newData: SongLyric): boolean {
+    // 比较数组长度
+    if (
+      oldData.lrcData?.length !== newData.lrcData?.length ||
+      oldData.yrcData?.length !== newData.yrcData?.length
+    ) {
+      return false;
+    }
+    // 比较 lrcData 内容（比较每行的 startTime 和文本内容）
+    const compareLines = (oldLines: LyricLine[], newLines: LyricLine[]): boolean => {
+      if (oldLines.length !== newLines.length) return false;
+      for (let i = 0; i < oldLines.length; i++) {
+        const oldLine = oldLines[i];
+        const newLine = newLines[i];
+        const oldText = oldLine.words?.map((w) => w.word).join("") || "";
+        const newText = newLine.words?.map((w) => w.word).join("") || "";
+        if (oldLine.startTime !== newLine.startTime || oldText !== newText) {
+          return false;
+        }
+        // ttml 特有属性
+        if (newLine.isBG !== oldLine.isBG) return false;
+      }
+      return true;
+    };
+    return (
+      compareLines(oldData.lrcData || [], newData.lrcData || []) &&
+      compareLines(oldData.yrcData || [], newData.yrcData || [])
+    );
+  }
+
   /**
    * 设置最终歌词
    * @param lyricData 歌词数据
@@ -307,11 +418,18 @@ class LyricManager {
         ],
       }));
     }
+    // 比较新旧歌词数据，如果相同则跳过设置，避免重复重载
+    if (this.isLyricDataEqual(musicStore.songLyric, lyricData)) {
+      // 仅更新加载状态，不更新歌词数据
+      statusStore.lyricLoading = false;
+      return;
+    }
     // 设置歌词
     musicStore.setSongLyric(lyricData, true);
     // 结束加载状态
     statusStore.lyricLoading = false;
   }
+
   /**
    * 处理歌词
    * @param id 歌曲 ID

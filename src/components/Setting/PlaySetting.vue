@@ -30,16 +30,27 @@
         </div>
         <n-switch v-model:value="settingStore.memoryLastSeek" class="set" :round="false" />
       </n-card>
-       <n-card class="set-item">
+      <n-card class="set-item">
+        <div class="label">
+          <n-text class="name">显示进度条悬浮信息</n-text>
+        </div>
+        <n-switch v-model:value="settingStore.progressTooltipShow" class="set" :round="false" />
+      </n-card>
+      <n-card class="set-item">
         <div class="label">
           <n-text class="name">进度条悬浮时显示歌词</n-text>
         </div>
-        <n-switch v-model:value="settingStore.progressLyricShow" class="set" :round="false" />
+        <n-switch
+          v-model:value="settingStore.progressLyricShow"
+          :disabled="!settingStore.progressTooltipShow"
+          :round="false"
+          class="set"
+        />
       </n-card>
       <n-card class="set-item">
         <div class="label">
           <n-text class="name">进度调节吸附最近歌词</n-text>
-          <n-text class="tip" :depth="3">进度调节时吸附最近一句歌词</n-text>
+          <n-text class="tip" :depth="3">进度调节时从当前时间最近一句歌词开始播放</n-text>
         </div>
         <n-switch v-model:value="settingStore.progressAdjustLyric" class="set" :round="false" />
       </n-card>
@@ -100,7 +111,7 @@
         />
       </n-card>
     </div>
-    <div v-if="isElectron" class="set-list">
+    <div v-if="isElectron && statusStore.isDeveloperMode" class="set-list">
       <n-h3 prefix="bar">
         音乐解锁
         <n-tag type="warning" size="small" round>Beta</n-tag>
@@ -131,6 +142,26 @@
     </div>
     <div class="set-list">
       <n-h3 prefix="bar"> 播放器 </n-h3>
+      <n-card class="set-item">
+        <div class="label">
+          <n-text class="name">播放器展开动画</n-text>
+          <n-text class="tip" :depth="3">选择播放器展开时的动画效果</n-text>
+        </div>
+        <n-select
+          v-model:value="settingStore.playerExpandAnimation"
+          :options="[
+            {
+              label: '上浮',
+              value: 'up',
+            },
+            {
+              label: '平滑',
+              value: 'smooth',
+            },
+          ]"
+          class="set"
+        />
+      </n-card>
       <n-card class="set-item">
         <div class="label">
           <n-text class="name">播放器样式</n-text>
@@ -288,7 +319,7 @@
 
 <script setup lang="ts">
 import type { SelectOption } from "naive-ui";
-import { useSettingStore } from "@/stores";
+import { useSettingStore, useStatusStore } from "@/stores";
 import { isLogin } from "@/utils/auth";
 import { renderOption } from "@/utils/helper";
 import { isElectron } from "@/utils/env";
@@ -297,8 +328,8 @@ import { usePlayerController } from "@/core/player/PlayerController";
 import { openSongUnlockManager } from "@/utils/modal";
 
 const player = usePlayerController();
+const statusStore = useStatusStore();
 const settingStore = useSettingStore();
-
 // 输出设备数据
 const outputDevices = ref<SelectOption[]>([]);
 

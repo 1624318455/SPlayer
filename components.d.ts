@@ -107,6 +107,7 @@ declare module 'vue' {
     NP: typeof import('naive-ui')['NP']
     NPopconfirm: typeof import('naive-ui')['NPopconfirm']
     NPopover: typeof import('naive-ui')['NPopover']
+    NPopselect: typeof import('naive-ui')['NPopselect']
     NProgress: typeof import('naive-ui')['NProgress']
     NQrCode: typeof import('naive-ui')['NQrCode']
     NRadio: typeof import('naive-ui')['NRadio']
@@ -124,6 +125,7 @@ declare module 'vue' {
     NTag: typeof import('naive-ui')['NTag']
     NText: typeof import('naive-ui')['NText']
     NThing: typeof import('naive-ui')['NThing']
+    NTree: typeof import('naive-ui')['NTree']
     NVirtualList: typeof import('naive-ui')['NVirtualList']
     OtherSetting: typeof import('./src/components/Setting/OtherSetting.vue')['default']
     PersonalFM: typeof import('./src/components/Player/PersonalFM.vue')['default']
@@ -157,9 +159,11 @@ declare module 'vue' {
     SongUnlockManager: typeof import('./src/components/Modal/Setting/SongUnlockManager.vue')['default']
     SvgIcon: typeof import('./src/components/Global/SvgIcon.vue')['default']
     TextContainer: typeof import('./src/components/Global/TextContainer.vue')['default']
+    ThirdSetting: typeof import('./src/components/Setting/ThirdSetting.vue')['default']
     UpdateApp: typeof import('./src/components/Modal/UpdateApp.vue')['default']
     UpdatePlaylist: typeof import('./src/components/Modal/UpdatePlaylist.vue')['default']
     User: typeof import('./src/components/Layout/User.vue')['default']
     UserAgreement: typeof import('./src/components/Modal/UserAgreement.vue')['default']
+    VirtualScroll: typeof import('./src/components/UI/VirtualScroll.vue')['default']
   }
 }
